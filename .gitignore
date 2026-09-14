@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.env
+config.json
+*.sqlite*
+venv/
+.venv/
+.git/

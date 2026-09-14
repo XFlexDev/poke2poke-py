@@ -1,0 +1,9 @@
+{
+  "port": 8765,
+  "db_path": "data.sqlite",
+  "poke_inbound_url": "https://example.invalid/poke/inbound",
+  "cdn_upload_url": "https://example.invalid/upload",
+  "cdn_hosts": ["cdn.example.com"],
+  "tokens": {"usa": "replace-with-a-long-random-token", "aatu": "replace-with-a-long-random-token"},
+  "api_keys": {"usa": "replace-with-poke-api-key", "aatu": "replace-with-poke-api-key"}
+}
