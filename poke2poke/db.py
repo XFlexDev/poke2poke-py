@@ -31,21 +31,22 @@ class StoredMessage:
     push_attempts: int = 0
     push_error: str | None = None
     push_updated_at: str | None = None
+    row_id: int = 0
 
 
-def _encode_cursor(timestamp: str, msg_id: str) -> str:
-    raw = f"{timestamp}\x1f{msg_id}".encode()
+def _encode_cursor(timestamp: str, row_id: int) -> str:
+    raw = f"{timestamp}\x1f{row_id}".encode()
     return base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
-def _decode_cursor(cursor: str) -> tuple[str, str]:
+def _decode_cursor(cursor: str) -> tuple[str, int]:
     try:
         raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode()
-        timestamp, msg_id = raw.split("\x1f", 1)
-        if not timestamp or not msg_id:
+        timestamp, row_id = raw.split("\x1f", 1)
+        if not timestamp:
             raise ValueError
-        return timestamp, msg_id
-    except (ValueError, UnicodeDecodeError, binascii.Error) as exc:
+        return timestamp, int(row_id)
+    except (ValueError, TypeError, UnicodeDecodeError, binascii.Error) as exc:
         raise InvalidCursor("invalid pagination cursor") from exc
 
 
@@ -90,9 +91,10 @@ class MessageStore:
             for name, definition in migrations.items():
                 if name not in existing:
                     connection.execute(f"ALTER TABLE messages ADD COLUMN {name} {definition}")
+            connection.execute("DROP INDEX IF EXISTS idx_messages_recipient_time_id")
             connection.execute(
-                "CREATE INDEX IF NOT EXISTS idx_messages_recipient_time_id "
-                "ON messages(recipient_handle,timestamp,msg_id)"
+                "CREATE INDEX IF NOT EXISTS idx_messages_recipient_time "
+                "ON messages(recipient_handle,timestamp)"
             )
         self._initialized = True
 
@@ -125,6 +127,7 @@ class MessageStore:
             push_attempts=int(row["push_attempts"] or 0) if "push_attempts" in columns else 0,
             push_error=row["push_error"] if "push_error" in columns else None,
             push_updated_at=row["push_updated_at"] if "push_updated_at" in columns else None,
+            row_id=int(row["row_id"]) if "row_id" in columns else 0,
         )
 
     def _insert(
@@ -140,7 +143,9 @@ class MessageStore:
                 "VALUES (?,?,?,?,?,?,?)",
                 (msg_id, sender, recipient, text, metadata, timestamp, "unread"),
             )
-            row = connection.execute("SELECT * FROM messages WHERE msg_id=?", (msg_id,)).fetchone()
+            row = connection.execute(
+                "SELECT rowid AS row_id, * FROM messages WHERE msg_id=?", (msg_id,)
+            ).fetchone()
         if row is None:
             raise RuntimeError("inserted message could not be read")
         return self._message(row)
@@ -153,21 +158,21 @@ class MessageStore:
     def _list(
         self, recipient: str, unread_only: bool, limit: int, cursor: str | None
     ) -> tuple[list[StoredMessage], str | None]:
-        query = "SELECT * FROM messages WHERE recipient_handle=?"
+        query = "SELECT rowid AS row_id, * FROM messages WHERE recipient_handle=?"
         args: list[object] = [recipient]
         if unread_only:
             query += " AND status != 'read'"
         if cursor:
-            timestamp, msg_id = _decode_cursor(cursor)
-            query += " AND (timestamp > ? OR (timestamp = ? AND msg_id > ?))"
-            args.extend([timestamp, timestamp, msg_id])
-        query += " ORDER BY timestamp ASC, msg_id ASC LIMIT ?"
+            timestamp, row_id = _decode_cursor(cursor)
+            query += " AND (timestamp > ? OR (timestamp = ? AND rowid > ?))"
+            args.extend([timestamp, timestamp, row_id])
+        query += " ORDER BY timestamp ASC, rowid ASC LIMIT ?"
         args.append(limit + 1)
         with contextlib.closing(self._connect()) as connection:
             rows = connection.execute(query, args).fetchall()
         messages = [self._message(row) for row in rows[:limit]]
         next_cursor = (
-            _encode_cursor(messages[-1].timestamp, messages[-1].msg_id)
+            _encode_cursor(messages[-1].timestamp, messages[-1].row_id)
             if len(rows) > limit
             else None
         )
@@ -192,7 +197,8 @@ class MessageStore:
     def _get(self, msg_id: str, recipient: str) -> StoredMessage | None:
         with contextlib.closing(self._connect()) as connection:
             row = connection.execute(
-                "SELECT * FROM messages WHERE msg_id=? AND recipient_handle=?", (msg_id, recipient)
+                "SELECT rowid AS row_id, * FROM messages WHERE msg_id=? AND recipient_handle=?",
+                (msg_id, recipient),
             ).fetchone()
         return self._message(row) if row else None
 

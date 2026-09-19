@@ -16,8 +16,7 @@ async def test_store_pagination_and_ack(tmp_path) -> None:
     second, cursor2 = await store.list_messages("aatu", unread_only=True, limit=3, cursor=cursor)
     third, cursor3 = await store.list_messages("aatu", unread_only=True, limit=3, cursor=cursor2)
     messages = first + second + third
-    assert len(messages) == 7
-    assert {item.text for item in messages} == {f"message {i}" for i in range(7)}
+    assert [item.text for item in messages] == [f"message {i}" for i in range(7)]
     assert cursor3 is None
     assert await store.count_unread("aatu") == 7
     assert await store.mark_read(first[0].msg_id, "aatu", "done") == "acknowledged"
@@ -28,6 +27,34 @@ async def test_store_pagination_and_ack(tmp_path) -> None:
     assert message and message.push_status == "delivered"
     with pytest.raises(InvalidCursor):
         await store.list_messages("aatu", unread_only=True, limit=3, cursor="bad")
+
+
+async def test_store_pagination_with_identical_timestamps(tmp_path) -> None:
+    path = tmp_path / "same-timestamp.sqlite"
+    store = MessageStore(str(path))
+    store.initialize()
+    with sqlite3.connect(path) as connection:
+        for index in range(2):
+            connection.execute(
+                "INSERT INTO messages "
+                "(msg_id,sender_handle,recipient_handle,text,metadata,timestamp,status) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (
+                    f"same-{index}",
+                    "usa",
+                    "aatu",
+                    f"same {index}",
+                    "{}",
+                    "2024-01-01T00:00:00.000+00:00",
+                    "unread",
+                ),
+            )
+    first, cursor = await store.list_messages("aatu", unread_only=True, limit=1, cursor=None)
+    second, next_cursor = await store.list_messages(
+        "aatu", unread_only=True, limit=1, cursor=cursor
+    )
+    assert [item.text for item in first + second] == ["same 0", "same 1"]
+    assert next_cursor is None
 
 
 async def test_legacy_migration_and_isolation(tmp_path) -> None:
