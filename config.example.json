@@ -4,6 +4,12 @@
   "poke_inbound_url": "https://example.invalid/poke/inbound",
   "cdn_upload_url": "https://example.invalid/upload",
   "cdn_hosts": ["cdn.example.com"],
+  "max_message_chars": 4000,
+  "max_attachments": 10,
+  "max_upload_bytes": 104857600,
+  "poke_push_timeout_s": 20,
+  "poke_push_attempts": 4,
+  "allow_private_upload_sources": false,
   "tokens": {"usa": "replace-with-a-long-random-token", "aatu": "replace-with-a-long-random-token"},
   "api_keys": {"usa": "replace-with-poke-api-key", "aatu": "replace-with-poke-api-key"}
 }
