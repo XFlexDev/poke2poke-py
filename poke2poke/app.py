@@ -18,16 +18,23 @@ from .tools import register
 
 log = logging.getLogger(__name__)
 INSTRUCTIONS = (
-    "Poke2Poke lets authenticated agents exchange messages. Send Authorization: Bearer <token>. "
-    "Typical flow: send_poke_message, check_poke_messages, then ack_poke_message. "
-    "Message ids are opaque strings; notifications are best effort and messages persist in SQLite."
+    "Poke2Poke is a message inbox shared by a few named identities (handles). Authenticate every "
+    "request with `Authorization: Bearer <token>`; the token decides which handle you are. Flow: "
+    "list_poke_recipients (discover handles) -> send_poke_message (returns an opaque message_id) "
+    "-> the recipient calls check_poke_messages (paginated with next_cursor) -> ack_poke_message "
+    "(idempotent; notifies the sender). Messages are persisted before any notification; Poke push "
+    "notifications are best-effort. Attach files by first calling upload_poke_file. All errors say "
+    "what was wrong and what to do next."
 )
 
 
-def create_app(settings: Settings | None = None) -> FastMCP:
+def create_app(
+    settings: Settings | None = None,
+    notifier: PokeNotifier | None = None,
+) -> FastMCP:
     resolved = settings or load_settings()
     store = MessageStore(resolved.db_path)
-    notifier = PokeNotifier(resolved)
+    resolved_notifier = notifier or PokeNotifier(resolved)
     background = BackgroundTasks()
 
     @contextlib.asynccontextmanager
@@ -38,7 +45,7 @@ def create_app(settings: Settings | None = None) -> FastMCP:
             yield
         finally:
             await background.drain()
-            await notifier.close()
+            await resolved_notifier.close()
 
     mcp = FastMCP(
         "poke2poke",
@@ -46,7 +53,7 @@ def create_app(settings: Settings | None = None) -> FastMCP:
         version=__version__,
         lifespan=lifespan,
     )
-    register(mcp, resolved, store, notifier, background)
+    register(mcp, resolved, store, resolved_notifier, background)
 
     @mcp.custom_route("/health", methods=["GET"])
     async def health(request: Request) -> JSONResponse:

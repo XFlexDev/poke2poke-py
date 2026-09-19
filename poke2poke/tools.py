@@ -12,10 +12,10 @@ from functools import wraps
 from pathlib import PurePath
 from typing import Annotated, Literal, TypeVar
 
-import httpx
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.dependencies import get_http_headers
+from httpx import AsyncClient
 from mcp.types import ToolAnnotations
 from pydantic import BaseModel, Field
 
@@ -186,6 +186,31 @@ async def _push_and_record(
     return result
 
 
+async def _push_ack_notification(
+    notifier: PokeNotifier,
+    msg_id: str,
+    recipient: str,
+    message: str,
+    sender: str,
+    note: str,
+) -> None:
+    result = await notifier.push(
+        recipient,
+        message,
+        sender,
+        event="acknowledgment",
+        note=note,
+    )
+    log.info(
+        "ack notification msg_id=%s to=%s status=%s attempts=%s error=%s",
+        msg_id,
+        recipient,
+        result.status,
+        result.attempts,
+        result.error,
+    )
+
+
 def _is_private(host: str, addresses: list[str]) -> bool:
     if host.lower() == "localhost":
         return True
@@ -244,14 +269,22 @@ def register(
         recipient: Annotated[
             str,
             Field(
-                description="Recipient handle. Call list_poke_recipients first.", examples=["aatu"]
+                description=(
+                    "Handle of the recipient identity, e.g. 'aatu'. Must be one of the values "
+                    "returned by list_poke_recipients (case-insensitive; cannot be your own "
+                    "handle)."
+                ),
+                examples=["aatu"],
             ),
         ],
         message: Annotated[
             str,
             Field(
                 default="",
-                description="Plain UTF-8 text; use \\n for newlines.",
+                description=(
+                    "Message text (plain UTF-8, newlines allowed). Optional only when "
+                    "attachment_urls is provided. Maximum 4000 characters."
+                ),
                 examples=["Hello from usa"],
                 max_length=4000,
             ),
@@ -261,18 +294,25 @@ def register(
             Field(
                 default=None,
                 description=(
-                    "HTTPS URLs on the configured CDN; obtain them with upload_poke_file first."
+                    "Optional list (max 10) of https:// URLs on the configured CDN, exactly as "
+                    "returned in `url` by upload_poke_file."
                 ),
                 examples=[["https://cdn.example.com/file.txt"]],
                 max_length=10,
             ),
         ] = None,
     ) -> SendResult:
-        """Send a durable message from your bearer-token identity to another identity.
+        """Send a message to another Poke2Poke identity.
 
-        The message is persisted before a best-effort Poke notification is
-        queued. Call this to communicate, then the recipient can check and
-        acknowledge the message.
+        You are identified by your bearer token (see `sender` in the result). The message is
+        stored durably first, then a best-effort push notification is queued for the recipient's
+        Poke agent. If the recipient has no Poke API key configured, `notification` is "disabled"
+        but they will still see the message when they call check_poke_messages.
+
+        Provide `message`, `attachment_urls`, or both. Attachment URLs must come from
+        upload_poke_file. Returns an opaque `message_id`; the recipient acknowledges it later via
+        ack_poke_message and you are notified when they do. Call list_poke_recipients if you are
+        unsure which `recipient` handles exist — never guess a handle.
         """
         caller = resolve_caller(settings)
         recipient_name = _validate_recipient(settings, caller, recipient)
@@ -317,20 +357,37 @@ def register(
     @_guarded("checking Poke messages")
     async def check_poke_messages(
         unread_only: Annotated[
-            bool, Field(description="When true, return only messages not yet acknowledged.")
+            bool,
+            Field(
+                description=(
+                    "true (default): only messages you have not acknowledged yet. false: include "
+                    "acknowledged messages too."
+                )
+            ),
         ] = True,
-        limit: Annotated[int, Field(description="Maximum messages to return.", ge=1, le=100)] = 50,
+        limit: Annotated[
+            int, Field(description="Page size, 1-100 (default 50).", ge=1, le=100)
+        ] = 50,
         cursor: Annotated[
             str | None,
             Field(
-                description="Exact next_cursor from an earlier call, or omit for the first page."
+                description=(
+                    "Opaque pagination cursor. Omit for the first page; for later pages pass the "
+                    "`next_cursor` value from the previous response unchanged."
+                )
             ),
         ] = None,
     ) -> Inbox:
-        """List your inbox oldest first, with unread filtering and pagination.
+        """List messages addressed to you (the identity behind your bearer token), oldest first.
 
-        Your identity comes from the bearer token. Call this to receive
-        messages, then acknowledge handled opaque ids.
+        By default only unacknowledged messages (status "unread") are returned; set
+        unread_only=false to include acknowledged ones. Results are paginated: when `has_more` is
+        true, call again with `cursor` set to the returned `next_cursor` (an opaque string — pass
+        it back unchanged, never construct one). `unread_total` is the total number of
+        unacknowledged messages regardless of paging.
+
+        After handling a message, call ack_poke_message with its exact `message_id` so the sender
+        learns you have read it.
         """
         caller = resolve_caller(settings)
         try:
@@ -366,21 +423,35 @@ def register(
     @_guarded("acknowledging a Poke message")
     async def ack_poke_message(
         message_id: Annotated[
-            str, Field(description="Exact opaque id from check_poke_messages.", min_length=1)
+            str,
+            Field(
+                description=(
+                    "Exact `message_id` value of a message returned by check_poke_messages "
+                    "(opaque string; do not modify or guess)."
+                ),
+                min_length=1,
+            ),
         ],
         note: Annotated[
             str,
             Field(
                 default="",
-                description="Optional short reply text shown to the sender.",
+                description=(
+                    "Optional short reply (max 1000 characters) shown to the sender inside the "
+                    "acknowledgement notification."
+                ),
                 max_length=1000,
             ),
         ] = "",
     ) -> AckResult:
-        """Acknowledge a message and queue a notification to its sender.
+        """Mark one of your received messages as read/acknowledged and notify its sender.
 
-        Repeating an acknowledgement is idempotent and does not notify again.
-        The notification runs in the background, so this response is fast.
+        Use the exact `message_id` from check_poke_messages. `note` is an optional short reply
+        included in the notification to the sender. Acknowledging is idempotent: acknowledging an
+        already-acknowledged message returns status "already_acknowledged" and does not notify the
+        sender again. The notification is delivered in the background; `notification` is "queued",
+        "disabled" (sender has no Poke API key) or "not_sent" (already acknowledged). Fails with a
+        clear error if the message_id does not exist or is not addressed to you.
         """
         caller = resolve_caller(settings)
         message = await store.get_message(message_id, caller)
@@ -409,15 +480,13 @@ def register(
             "queued" if settings.api_keys.get(message.sender_handle) else "disabled"
         )
         background.create(
-            _push_and_record(
-                store,
+            _push_ack_notification(
                 notifier,
                 message_id,
                 message.sender_handle,
                 f"{caller} acknowledged your message"
                 + (f": {note.strip()}" if note.strip() else ""),
                 caller,
-                event="acknowledgment",
                 note=note.strip(),
             )
         )
@@ -437,22 +506,37 @@ def register(
     async def upload_poke_file(
         source_url: Annotated[
             str,
-            Field(description="HTTPS URL to download.", examples=["https://example.com/file.txt"]),
+            Field(
+                description=(
+                    "Publicly reachable https:// URL of the file to copy. Private/internal hosts "
+                    "are rejected."
+                ),
+                examples=["https://example.com/file.txt"],
+            ),
         ],
         filename: Annotated[
-            str, Field(default="attachment", description="Output filename.", max_length=200)
+            str,
+            Field(
+                default="attachment",
+                description=(
+                    "File name to store on the CDN, e.g. 'report.pdf'. Path components and control "
+                    "characters are stripped; default 'attachment'."
+                ),
+                max_length=200,
+            ),
         ] = "attachment",
     ) -> UploadResult:
-        """Download a safe HTTPS source and upload it to the configured CDN.
+        """Copy a publicly reachable HTTPS file to the CDN so it can be attached to a message.
 
-        Call this before sending an attachment. Pass the returned CDN URL to
-        send_poke_message as an attachment URL.
+        The file is downloaded server-side (redirects followed, private/internal hosts blocked,
+        size limit enforced) and uploaded to the configured CDN. Returns `url`, which you pass in
+        `attachment_urls` of send_poke_message. Only https:// source URLs are accepted.
         """
         resolve_caller(settings)
         current = source_url
         data = bytearray()
         content_type = "application/octet-stream"
-        async with httpx.AsyncClient(follow_redirects=False, timeout=60) as client:
+        async with AsyncClient(follow_redirects=False, timeout=60) as client:
             for hop in range(6):
                 await _guard_source_url(settings, current)
                 async with client.stream("GET", current, follow_redirects=False) as response:
@@ -485,7 +569,7 @@ def register(
             else:
                 raise ToolError("Could not download source_url: too many redirects.")
         safe_name = _safe_filename(filename)
-        async with httpx.AsyncClient(timeout=120) as client:
+        async with AsyncClient(timeout=120) as client:
             response = await client.post(
                 settings.cdn_upload_url,
                 files={"file": (safe_name, bytes(data), content_type)},
@@ -514,10 +598,11 @@ def register(
     )
     @_guarded("listing Poke recipients")
     async def list_poke_recipients() -> RecipientsResult:
-        """List valid recipient handles for your bearer-token identity.
+        """Show who you are and which handles you can send messages to.
 
-        Call this when you are unsure which handle to pass to
-        send_poke_message.
+        Returns `you` (your handle, derived from your bearer token) and `recipients` (all other
+        configured handles). Call this before send_poke_message if you are unsure of a handle —
+        never guess.
         """
         caller = resolve_caller(settings)
         return RecipientsResult(

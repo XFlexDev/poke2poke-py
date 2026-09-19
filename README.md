@@ -78,10 +78,19 @@ JSON status and checks the SQLite database.
 
 * The service is now a `poke2poke` package while `python server.py` remains
   supported.
-* Tool results are typed structured objects instead of bare strings/raw rows.
-* Inbox keys are intentionally agent-oriented (`message_id`, `sender`,
-  `message`, `sent_at`, and so on).
-* Messages support attachments, keyset pagination, read timestamps, notes,
-  and tracked notification delivery.
-* Authentication, validation, retries, upload size limits, and SSRF checks
-  are hardened.
+* `send_poke_message` returns an object instead of a bare id.
+* `check_poke_messages` returns `{messages, ...}` with renamed keys:
+  `msg_id` → `message_id`, `sender_handle` → `sender`, `recipient_handle` →
+  `recipient`, `text` → `message`, `metadata.attachments` → `attachments`,
+  and `timestamp` → `sent_at`.
+* `ack_poke_message` returns an object and raises an actionable error instead
+  of returning `"not found"`.
+* Acknowledgement notifications no longer block the tool call on Poke
+  delivery. They are logged but not stored; `push_status` columns describe
+  the original SEND notification.
+* Added the `list_poke_recipients` tool and optional `limit`/`cursor`
+  parameters for inbox pagination.
+* Recipient handles are normalized case-insensitively and self-sends are
+  rejected.
+* Message length is limited and upload SSRF protection blocks private and
+  internal source hosts.

@@ -94,9 +94,7 @@ class PokeNotifier:
             if not retryable or attempt == attempts:
                 break
             await asyncio.sleep(min(8.0, 0.5 * 2 ** (attempt - 1)) + random.uniform(0, 0.25))
-        return PushResult(
-            "failed", attempts if last_status is None else attempt, last_status, last_error
-        )
+        return PushResult("failed", attempt, last_status, last_error)
 
     async def close(self) -> None:
         if self._owns_client:

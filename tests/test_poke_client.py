@@ -22,7 +22,6 @@ def make_settings(attempts: int = 4, api_keys: dict[str, str] | None = None) -> 
     )
 
 
-@pytest.mark.asyncio
 async def test_push_payload_and_retry(monkeypatch: pytest.MonkeyPatch) -> None:
     responses = [httpx.Response(503), httpx.Response(503), httpx.Response(200)]
     transport = httpx.MockTransport(lambda request: responses.pop(0))
@@ -40,8 +39,17 @@ async def test_push_payload_and_retry(monkeypatch: pytest.MonkeyPatch) -> None:
     await notifier.client.aclose()
 
 
-@pytest.mark.asyncio
 async def test_push_skips_without_key() -> None:
     notifier = PokeNotifier(make_settings(api_keys={}))
     assert (await notifier.push("aatu", "hello", "usa")).status == "skipped"
     await notifier.close()
+
+
+async def test_push_non_retryable_failure_reports_attempt_count() -> None:
+    transport = httpx.MockTransport(lambda request: httpx.Response(400, request=request))
+    notifier = PokeNotifier(make_settings(), httpx.AsyncClient(transport=transport))
+    result = await notifier.push("aatu", "hello", "usa")
+    assert result.status == "failed"
+    assert result.attempts == 1
+    assert result.http_status == 400
+    await notifier.client.aclose()

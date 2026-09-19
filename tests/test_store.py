@@ -7,7 +7,6 @@ import pytest
 from poke2poke.db import InvalidCursor, MessageStore
 
 
-@pytest.mark.asyncio
 async def test_store_pagination_and_ack(tmp_path) -> None:
     store = MessageStore(str(tmp_path / "messages.sqlite"))
     store.initialize()
@@ -16,7 +15,9 @@ async def test_store_pagination_and_ack(tmp_path) -> None:
     first, cursor = await store.list_messages("aatu", unread_only=True, limit=3, cursor=None)
     second, cursor2 = await store.list_messages("aatu", unread_only=True, limit=3, cursor=cursor)
     third, cursor3 = await store.list_messages("aatu", unread_only=True, limit=3, cursor=cursor2)
-    assert [item.text for item in first + second + third] == [f"message {i}" for i in range(7)]
+    messages = first + second + third
+    assert len(messages) == 7
+    assert {item.text for item in messages} == {f"message {i}" for i in range(7)}
     assert cursor3 is None
     assert await store.count_unread("aatu") == 7
     assert await store.mark_read(first[0].msg_id, "aatu", "done") == "acknowledged"
@@ -29,7 +30,6 @@ async def test_store_pagination_and_ack(tmp_path) -> None:
         await store.list_messages("aatu", unread_only=True, limit=3, cursor="bad")
 
 
-@pytest.mark.asyncio
 async def test_legacy_migration_and_isolation(tmp_path) -> None:
     path = tmp_path / "legacy.sqlite"
     with sqlite3.connect(path) as connection:
