@@ -12,3 +12,4 @@ CDN_UPLOAD_URL = os.environ.get('CDN1_UPLOAD_URL', CONFIG['cdn_upload_url'])
 CDN_HOSTS = set(CONFIG['cdn_hosts'])
 TOKENS = {k: os.environ.get('POKE2POKE_KEY_'+k.upper(), v).strip() for k,v in CONFIG['tokens'].items()}
 API_KEYS = {k: os.environ.get('POKE_API_KEY_'+k.upper(), v).strip() for k,v in CONFIG['api_keys'].items()}
+TRUSTED_PEERS = CONFIG.get('trusted_peers', {})
