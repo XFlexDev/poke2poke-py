@@ -37,7 +37,10 @@ Optional limits: `max_message_chars` (20000), `max_attachments` (10), `max_uploa
 ```sh
 pip install pytest
 python -m pytest -q tests
+python -m pytest -q test_trust_policy.py
 ```
+
+Run the two separately: each configures `tools` at import with its own tokens, so one `pytest` run over both fails. CI runs both on Python 3.11 and 3.12.
 
 Never put production JWTs, Poke API keys, database files, or other credentials in source control. Rotate any credential that may have been exposed.
 
