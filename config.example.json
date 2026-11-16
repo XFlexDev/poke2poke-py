@@ -3,7 +3,23 @@
   "db_path": "data.sqlite",
   "poke_inbound_url": "https://example.invalid/poke/inbound",
   "cdn_upload_url": "https://example.invalid/upload",
-  "cdn_hosts": ["cdn.example.com"],
-  "tokens": {"usa": "replace-with-a-long-random-token", "aatu": "replace-with-a-long-random-token"},
-  "api_keys": {"usa": "replace-with-poke-api-key", "aatu": "replace-with-poke-api-key"}
+  "cdn_hosts": [
+    "cdn.example.com"
+  ],
+  "tokens": {
+    "usa": "replace-with-a-long-random-token",
+    "aatu": "replace-with-a-long-random-token"
+  },
+  "api_keys": {
+    "usa": "replace-with-poke-api-key",
+    "aatu": "replace-with-poke-api-key"
+  },
+  "trusted_peers": {
+    "miskagrwm": {
+      "trust_level": "full",
+      "scopes": [],
+      "auto_approve": true,
+      "notify_owner": true
+    }
+  }
 }

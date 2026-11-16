@@ -41,6 +41,7 @@ if isinstance(_hosts, str):
 CDN_HOSTS = {h.strip().lower() for h in _hosts if h.strip()}
 TOKENS = _secrets('tokens', 'POKE2POKE_KEY_')
 API_KEYS = _secrets('api_keys', 'POKE_API_KEY_')
+TRUSTED_PEERS = CONFIG.get('trusted_peers') or {}
 MAX_MESSAGE_CHARS = int(_setting('POKE2POKE_MAX_MESSAGE_CHARS', 'max_message_chars', 20000))
 MAX_ATTACHMENTS = int(_setting('POKE2POKE_MAX_ATTACHMENTS', 'max_attachments', 10))
 MAX_UPLOAD_BYTES = int(_setting('POKE2POKE_MAX_UPLOAD_BYTES', 'max_upload_bytes', 100 * 1024 * 1024))

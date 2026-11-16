@@ -13,7 +13,7 @@ import urllib.request
 from datetime import datetime, timezone
 from fastmcp import Context
 from fastmcp.server.dependencies import get_http_request
-from config import TOKENS, CDN_UPLOAD_URL, CDN_HOSTS, MAX_MESSAGE_CHARS, MAX_ATTACHMENTS, MAX_UPLOAD_BYTES
+from config import TOKENS, TRUSTED_PEERS, CDN_UPLOAD_URL, CDN_HOSTS, MAX_MESSAGE_CHARS, MAX_ATTACHMENTS, MAX_UPLOAD_BYTES
 from db import connection
 from poke_client import push_to_poke, spawn
 
@@ -118,14 +118,66 @@ def register(mcp):
         mid = secrets.token_urlsafe(16)
         meta = json.dumps({'attachments': urls}, separators=(',', ':'))
 
-        def insert():
-            with connection() as c:
-                c.execute('INSERT INTO messages (msg_id,sender_handle,recipient_handle,text,metadata,timestamp,status) VALUES (?,?,?,?,?,?,?)',
-                          (mid, sender, recipient, message, meta, _now(), 'unread'))
+        configured = TRUSTED_PEERS.get(sender) or {}
 
-        await asyncio.to_thread(insert)
-        spawn(push_to_poke(recipient, message, sender, attachments=[{'url': u} for u in urls] or None), name=f'push:{mid}')
+        def insert():
+            ts = _now()
+            with connection() as c:
+                row = c.execute('SELECT trust_level,auto_approve,notify_owner FROM trusted_peers WHERE peer_id=?', (sender,)).fetchone()
+                if row:
+                    peer = dict(row)
+                elif configured:
+                    peer = configured
+                    c.execute('INSERT OR REPLACE INTO trusted_peers (peer_id,trust_level,scopes,auto_approve,notify_owner,updated_at) VALUES (?,?,?,?,?,?)',
+                              (sender, configured.get('trust_level', 'none'), json.dumps(configured.get('scopes', [])),
+                               int(configured.get('auto_approve', False)), int(configured.get('notify_owner', True)), ts))
+                else:
+                    peer = None
+                c.execute('INSERT INTO messages (msg_id,sender_handle,recipient_handle,text,metadata,timestamp,status) VALUES (?,?,?,?,?,?,?)',
+                          (mid, sender, recipient, message, meta, ts, 'unread'))
+                return peer
+
+        peer = await asyncio.to_thread(insert)
+        attachments = [{'url': u} for u in urls] or None
+        full_trust = bool(peer) and peer.get('trust_level') == 'full' and bool(peer.get('auto_approve'))
+        if full_trust and peer.get('notify_owner', True):
+            await push_to_poke(recipient, f'annoin {sender}: {message}', sender, event='trust_notification',
+                               note='full_trust auto-approved', status='auto_approved', attachments=attachments)
+        else:
+            spawn(push_to_poke(recipient, message, sender, attachments=attachments), name=f'push:{mid}')
         return mid
+
+    @mcp.tool()
+    async def set_trusted_peer(peer_id: str, trust_level: str = 'none', scopes: list[str] | None = None, auto_approve: bool = False,
+                               notify_owner: bool = True, ctx: Context | None = None) -> str:
+        """Save the trust policy for a peer. trust_level is full, scoped or none; full always auto-approves."""
+        owner = await caller(ctx)
+        peer_id = (peer_id or '').strip()
+        if not peer_id:
+            raise ValueError('peer_id is required')
+        if trust_level not in ('full', 'scoped', 'none'):
+            raise ValueError('trust_level must be full, scoped, or none')
+        if trust_level == 'full':
+            auto_approve = True
+
+        def save():
+            with connection() as c:
+                c.execute('INSERT OR REPLACE INTO trusted_peers (peer_id,trust_level,scopes,auto_approve,notify_owner,updated_at) VALUES (?,?,?,?,?,?)',
+                          (peer_id, trust_level, json.dumps(scopes or []), int(auto_approve), int(notify_owner), _now()))
+
+        await asyncio.to_thread(save)
+        return f'trust policy saved for {peer_id} by {owner}'
+
+    @mcp.tool()
+    async def list_trusted_peers(ctx: Context | None = None) -> list[dict]:
+        """List every saved peer trust policy."""
+        await caller(ctx)
+
+        def query():
+            with connection() as c:
+                return [dict(r) for r in c.execute('SELECT peer_id,trust_level,scopes,auto_approve,notify_owner,updated_at FROM trusted_peers ORDER BY peer_id')]
+
+        return await asyncio.to_thread(query)
 
     @mcp.tool()
     async def check_poke_messages(unread_only: bool = True, limit: int = MAX_RESULTS, ctx: Context | None = None) -> list[dict]:
